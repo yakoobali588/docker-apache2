@@ -15,6 +15,13 @@ variables:
   containerRegistry: 'demoacruat.azurecr.io'
   dockerfilePath: '$(Build.SourcesDirectory)/Dockerfile'
   tag: '$(Build.BuildId)'
+  imageName: 'apache-webapp'
+  acrName: 'demoacruat'              # ACR name (without azurecr.io)
+  acrLoginServer: 'demoacruat.azurecr.io'
+  aksCluster: 'aksdemocluster'
+  aksResourceGroup: 'demo-rg'
+  namespace: 'default'
+
 
   # Agent VM image name
   vmImageName: 'ubuntu-latest'
@@ -37,3 +44,68 @@ stages:
         containerRegistry: $(dockerRegistryServiceConnection)
         tags: |
           $(tag)
+
+# =========================
+# Stage 1: Build & Push Image
+# =========================
+# - stage: Build
+#   displayName: Build and Push Docker Image
+#   jobs:
+#   - job: Build
+#     pool:
+#       vmImage: 'ubuntu-latest'
+
+#     steps:
+#     - task: Docker@2
+#       displayName: Build and Push Image to ACR
+#       inputs:
+#         containerRegistry: 'ACR-Service-Connection'   # Service connection name
+#         repository: '$(imageName)'
+#         command: 'buildAndPush'
+#         Dockerfile: '**/Dockerfile'
+#         tags: |
+#           $(Build.BuildId)
+
+# =========================
+# Stage 2: Deploy to AKS
+# =========================
+- stage: Deploy
+  displayName: Deploy to AKS
+  dependsOn: Build
+  jobs:
+  - deployment: DeployToAKS
+    displayName: Deploy to AKS Cluster
+    environment: 'aks-dev'
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          # Set AKS context
+          - task: AzureCLI@2
+            displayName: Get AKS Credentials
+            inputs:
+              azureSubscription: 'Azure-Service-Connection'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az aks get-credentials \
+                  --resource-group $(aksResourceGroup) \
+                  --name $(aksCluster) \
+                  --overwrite-existing
+
+          # Deploy using kubectl
+          - script: |
+              kubectl create deployment apache-deployment \
+                --image=$(acrLoginServer)/$(imageName):$(Build.BuildId) \
+                --dry-run=client -o yaml | kubectl apply -f -
+
+              kubectl expose deployment apache-deployment \
+                --type=LoadBalancer \
+                --port=80 \
+                --target-port=80 \
+                --dry-run=client -o yaml | kubectl apply -f -
+            displayName: Deploy Apache App to AKS
